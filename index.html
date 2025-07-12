@@ -848,7 +848,7 @@ function draw() {
     ctx.fillStyle = "#fff";
     ctx.font = "bold 38px 'Press Start 2P', monospace";
     ctx.textAlign = "center";
-    ctx.fillText("Zombird!", VIRTUAL_WIDTH / 2, 160);
+    ctx.fillText("Zombirdie", VIRTUAL_WIDTH / 2, 160);
     ctx.font = "16px 'Press Start 2P', monospace";
     ctx.fillStyle = "#FFD700";
     ctx.fillText("High Score: " + highScore, VIRTUAL_WIDTH / 2, 360);
@@ -858,11 +858,6 @@ function draw() {
     ctx.font = "11px 'Press Start 2P', monospace";
     ctx.fillStyle = "#aaa";
     ctx.fillText("Choose your mode!", VIRTUAL_WIDTH / 2, 395);
-    ctx.font = "14px 'Press Start 2P', monospace";
-    ctx.fillStyle = "#FFD700";
-    ctx.fillText("Classic [1]", VIRTUAL_WIDTH / 2, 425);
-    ctx.fillStyle = "#80ff80";
-    ctx.fillText("Chaos   [2]", VIRTUAL_WIDTH / 2, 450);
   } else if (gameState === STATE_MODE_SELECT) {
     drawGround();
     ctx.fillStyle = "#fff";
