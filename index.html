@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Zombird!</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Press Start 2P', monospace; margin:0; padding:0; }
+    #gameCanvas { display: block; margin: auto; background: #000; }
+    #featherGif {
+      display: none;
+      position: absolute;
+      z-index: 10;
+      pointer-events: none;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<img id="featherGif" src="feather.gif" width="320" height="320" />
+<script>
+// === CONSTANTS ===
+const bgScrollSpeed = 0.3;
+const groundScrollSpeed = 1.5;
+const groundY = 482;
+const groundHeight = 118;
+const groundWidth = 1110;
+const HAND_WIDTH = 60, HAND_HEIGHT = 250, GAP = 180;
+const HAND_TALL = HAND_HEIGHT + 40;
+const MIN_HAND_SPACING_INIT = 200;
+const MIN_HAND_SPACING_TIGHT = 120;
+const MIN_HAND_SPACING_SUPERTIGHT = 80;
+const EDGE_THICKNESS = HAND_HEIGHT * 0.15;
+const BOSS_SCORE = 50;
+const TINY_POWERUP_SCORE = 14;
+const GRAB_SHOW_FEATHER_FRAMES = 30; // ~0.5s
+const FEATHER_GIF_DURATION = 500; // ms to display the feather gif (matches GIF duration!)
+
+// === AUDIO ===
+const flapSound = new Audio('main.mp3');
+const hitSound = new Audio('damage.mp3');
+const laughSound = new Audio('laugh.mp3');
+const bonkSound = new Audio('main.mp3');
+const powerupSound = new Audio('powerup.mp3');
+const tinySound = new Audio('powerup.mp3');
+const shootSound = new Audio('shoot.mp3');
+const bossHitSound = new Audio('damage.mp3');
+const scoreSound = new Audio('point.mp3');
+const musicClassic = new Audio('main.mp3');
+musicClassic.loop = true; musicClassic.volume = 0.5;
+const musicChaos = new Audio('main.mp3');
+musicChaos.loop = true; musicChaos.volume = 0.5;
+const titleMusic = new Audio('main.mp3');
+titleMusic.loop = true; titleMusic.volume = 0.6;
+
+let audioStarted = false;
+function ensureAudioAllowed() {
+  if (!audioStarted) {
+    [flapSound, hitSound, laughSound, bonkSound, powerupSound, tinySound, shootSound, bossHitSound, scoreSound, musicClassic, musicChaos, titleMusic].forEach(a => {
+      try { a.play().then(()=>a.pause()); } catch(e){}
+    });
+    audioStarted = true;
+  }
+}
+
+// === IMAGES ===
+const imagePaths = {
+  background: "background.png",
+  ground: "ground.png",
+  hand: "hand.png",
+  grab: "grab.png",
+  birdIdle: "bird.png",
+  birdFlap: "bird2.png",
+  bossHand: "bossHand.png",
+  bossHand2: "bossHand2.png",
+  powerup: "powerup.png",
+  tiny: "powerup.png",
+  projectile: "green-ball.png",
+  bossProjectile: "green-ball.png"
+};
+const gameImages = {};
+let imagesLoaded = 0;
+const totalImages = Object.keys(imagePaths).length;
+
+function loadImages(callback) {
+  let fired = false;
+  for (let key in imagePaths) {
+    const img = new Image();
+    img.src = imagePaths[key];
+    img.onload = () => {
+      imagesLoaded++;
+      if (!fired && imagesLoaded === totalImages) {
+        fired = true; callback();
+      }
+    };
+    img.onerror = () => {
+      imagesLoaded++;
+      if (!fired && imagesLoaded === totalImages) {
+        fired = true; callback();
+      }
+    };
+    gameImages[key] = img;
+  }
+}
+
+// === GAME STATES ===
+const STATE_TITLE = 0;
+const STATE_MODE_SELECT = 1;
+const STATE_PLAY = 2;
+const STATE_GAMEOVER = 3;
+const STATE_GRABBED = 4;
+const STATE_BOUNCE = 5;
+const STATE_BOSS = 6;
+const STATE_VICTORY = 7;
+
+let gameState = STATE_TITLE;
+const MODE_CLASSIC = "classic";
+const MODE_CHAOS = "chaos";
+let currentMode = MODE_CLASSIC;
+
+// === GAME VARS ===
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const featherGifElem = document.getElementById("featherGif");
+let canvasRect = canvas.getBoundingClientRect();
+
+const bird = {
+  x: 80, y: 250, width: 32, height: 32, velocity: 0, gravity: 0.6, lift: -10, visible: true,
+  normalW: 32, normalH: 32, tiny: false
+};
+
+let flapState = false;
+let score = 0;
+let highScore = 0;
+let hands = [];
+let frame = 0;
+let bgScrollX = 0, groundScrollX = 0;
+let MIN_HAND_SPACING = MIN_HAND_SPACING_INIT;
+
+// === POWERUPS ===
+let powerups = [];
+let tinyPowerupSpawned = false;
+
+// === GRAB/FEATHER SEQUENCE VARS ===
+let collisionPhase = 0;
+let collisionTimer = 0;
+let featherGifX = 0, featherGifY = 0, featherGifW = 0, featherGifH = 0;
+let grabHand = null;
+let grabHandStartY = 0, grabHandEndY = 0;
+let grabbedHandIndex = -1;
+let featherTimeout = null;
+
+// === BOUNCE ANIMATION VARS ===
+let bounceAnim = false;
+let bounceY = 0, bounceVy = 0, bounceRot = 0, bounceTimer = 0;
+
+// === BOSS ===
+let boss = null;
+let bossProjectiles = [];
+let bossHealth = 30;
+let bossFrame = 0;
+let bossDefeated = false;
+let bossHitBlink = 0;
+let birdProjectiles = [];
+let canShoot = true;
+let birdFireRate = 16;
+let birdProjectilePower = 1;
+let bossVictoryTimer = 0;
+
+// === SPECIAL FX VARS ===
+let fadeAlpha = 0;
+let fadeActive = false;
+let fadeTimer = 0;
+let fadeStarted = false;
+let bossGrowAnim = 0;
+let bossGrowing = false;
+
+// === HIGH SCORE (LOCALSTORAGE) ===
+if (localStorage.getItem("zombirdHighScore")) {
+  highScore = parseInt(localStorage.getItem("zombirdHighScore"));
+}
+
+function resetGame() {
+  bird.y = 250;
+  bird.velocity = 0;
+  hands = [];
+  score = 0;
+  frame = 0;
+  bgScrollX = 0;
+  groundScrollX = 0;
+  bird.visible = true;
+  collisionPhase = 0;
+  collisionTimer = 0;
+  featherGifX = 0;
+  featherGifY = 0;
+  featherGifW = 0;
+  featherGifH = 0;
+  grabHand = null;
+  grabHandStartY = 0;
+  grabHandEndY = 0;
+  MIN_HAND_SPACING = MIN_HAND_SPACING_INIT;
+  featherGifElem.style.display = 'none';
+  if (featherTimeout) { clearTimeout(featherTimeout); featherTimeout = null; }
+  bounceAnim = false;
+  bounceY = 0;
+  bounceVy = 0;
+  bounceRot = 0;
+  bounceTimer = 0;
+  boss = null;
+  bossProjectiles = [];
+  bossHealth = 10;
+  bossFrame = 0;
+  bossDefeated = false;
+  bossHitBlink = 0;
+  birdProjectiles = [];
+  canShoot = true;
+  birdFireRate = 16;
+  birdProjectilePower = 1;
+  powerups = [];
+  tinyPowerupSpawned = false;
+  bird.tiny = false;
+  bird.width = bird.normalW;
+  bird.height = bird.normalH;
+  bossVictoryTimer = 0;
+  grabbedHandIndex = -1;
+  fadeAlpha = 0;
+  fadeActive = false;
+  fadeTimer = 0;
+  fadeStarted = false;
+  bossGrowAnim = 0;
+  bossGrowing = false;
+}
+
+function setGameOver() {
+  gameState = STATE_GAMEOVER;
+  bird.visible = false;
+  musicClassic.pause();
+  musicChaos.pause();
+  titleMusic.pause();
+  hitSound.currentTime = 0; hitSound.play();
+
+  // Update high score
+  if (score > highScore) {
+    highScore = score;
+    localStorage.setItem("zombirdHighScore", highScore);
+  }
+
+  // Hide feather gif if showing
+  featherGifElem.style.display = 'none';
+}
+
+
+function drawBackground() {
+  const bgWidth = 1288, bgHeight = 602;
+  const scaleX = canvas.width / bgWidth, scaleY = canvas.height / bgHeight;
+  const scaledWidth = bgWidth * scaleX, scaledHeight = bgHeight * scaleY;
+  bgScrollX -= bgScrollSpeed;
+  if (bgScrollX <= -scaledWidth) bgScrollX = 0;
+  if (gameImages.background && gameImages.background.complete && gameImages.background.width) {
+    ctx.drawImage(gameImages.background, bgScrollX, 0, scaledWidth, scaledHeight);
+    ctx.drawImage(gameImages.background, bgScrollX + scaledWidth, 0, scaledWidth, scaledHeight);
+  } else {
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  if (fadeActive && currentMode === MODE_CHAOS) {
+    ctx.save();
+    ctx.globalAlpha = fadeAlpha;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+}
+
+function drawGround() {
+  groundScrollX -= groundScrollSpeed;
+  if (groundScrollX <= -groundWidth) groundScrollX = 0;
+  if (gameImages.ground && gameImages.ground.complete && gameImages.ground.width) {
+    ctx.drawImage(gameImages.ground, groundScrollX, groundY, groundWidth, groundHeight);
+    ctx.drawImage(gameImages.ground, groundScrollX + groundWidth, groundY, groundWidth, groundHeight);
+  } else {
+    ctx.fillStyle = "#444";
+    ctx.fillRect(0, groundY, canvas.width, groundHeight);
+  }
+}
+
+function drawBird() {
+  if (!bird.visible) return;
+  let img = flapState ? gameImages.birdFlap : gameImages.birdIdle;
+  if (img && img.complete && img.width)
+    ctx.drawImage(img, bird.x, bird.y, bird.width, bird.height);
+  else {
+    ctx.fillStyle = "#FF0";
+    ctx.fillRect(bird.x, bird.y, bird.width, bird.height);
+  }
+}
+
+function drawHand(hand, idx) {
+  if (idx === grabbedHandIndex) return;
+  const handImg = gameImages.hand;
+  let handX = hand.x;
+  let shake = (fadeActive && currentMode === MODE_CHAOS) ? Math.sin(frame * 0.24 + idx*2) * 6 + (Math.random()-0.5)*3 : 0;
+  handX += shake;
+  const handTall = HAND_TALL;
+  // How far above the screen you want to push the upper hand's base:
+const handBaseOffset = 12; // try 12, tweak as needed
+
+let topY = hand.y - GAP / 2 - handTall + handBaseOffset;
+
+// Ensure the base of the hand is flush or slightly offscreen:
+if (topY > 0) topY = 0;
+
+  const bottomY = hand.y + GAP / 2;
+  
+
+  if (handImg && handImg.complete && handImg.width) {
+    ctx.save();
+    ctx.translate(handX + HAND_WIDTH / 2, topY + handTall / 2);
+    ctx.scale(1, -1);
+    ctx.drawImage(handImg, -HAND_WIDTH / 2, -handTall / 2, HAND_WIDTH, handTall);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(handX, bottomY);
+    ctx.drawImage(handImg, 0, 0, HAND_WIDTH, handTall);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "#900";
+    ctx.fillRect(handX, topY, HAND_WIDTH, handTall);
+    ctx.fillRect(handX, bottomY, HAND_WIDTH, handTall);
+  }
+}
+
+function drawPowerups() {
+  powerups.forEach(p => {
+    let img = (p.type === "tiny") ? gameImages.tiny : gameImages.powerup;
+    let floatY = p.y + Math.sin(frame/24 + p.x/25)*4;
+    if (img && img.complete && img.width) {
+      ctx.drawImage(img, p.x, floatY, 22, 22);
+    } else {
+      ctx.fillStyle = p.type === "tiny" ? "#00f" : "#0ff";
+      ctx.fillRect(p.x, floatY, 22, 22);
+    }
+  });
+}
+
+function drawBoss() {
+  if (!boss) return;
+  let bossImg = gameImages.bossHand;
+  let bossAnimH = boss.h;
+  if (bossGrowing && bossGrowAnim < 1) {
+    bossAnimH = boss.h * bossGrowAnim;
+  }
+  let bossY = boss.y + boss.h - bossAnimH;
+  if (gameImages.bossHand && bossImg && bossImg.complete && bossImg.width) {
+    ctx.drawImage(bossImg, boss.x, bossY, boss.w, bossAnimH + 44);
+    if (bossHitBlink > 0 && bossHitBlink % 2 === 1) {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.filter = "invert(1)";
+      ctx.drawImage(bossImg, boss.x, bossY, boss.w, bossAnimH + 44);
+      ctx.filter = "none";
+      ctx.restore();
+    }
+  } else {
+    ctx.fillStyle = bossHitBlink > 0 ? "#fff" : "#f0f";
+    ctx.fillRect(boss.x, bossY, boss.w, bossAnimH + 44);
+  }
+  if (!bossGrowing || bossGrowAnim >= 1) {
+    ctx.fillStyle = "#111";
+    ctx.fillRect(boss.x, boss.y - 14, boss.w, 10);
+    ctx.fillStyle = "#f44";
+    ctx.fillRect(boss.x, boss.y - 14, boss.w * (bossHealth/10), 10);
+    ctx.strokeStyle = "#fff";
+    ctx.strokeRect(boss.x, boss.y - 14, boss.w, 10);
+  }
+}
+
+function drawBossProjectiles() {
+  let img = gameImages.bossProjectile;
+  bossProjectiles.forEach(p => {
+    if (img && img.complete && img.width)
+      ctx.drawImage(img, p.x, p.y, 12, 8);
+    else {
+      ctx.fillStyle = "#0f0";
+      ctx.fillRect(p.x, p.y, 12, 8);
+    }
+  });
+}
+
+function drawBirdProjectiles() {
+  let img = gameImages.projectile;
+  birdProjectiles.forEach(p => {
+    if (img && img.complete && img.width)
+      ctx.drawImage(img, p.x, p.y, 12, 8);
+    else {
+      ctx.fillStyle = "#00f";
+      ctx.fillRect(p.x, p.y, 12, 8);
+    }
+  });
+}
+
+function drawGrabHand() {
+  if (gameImages.grab && gameImages.grab.complete && grabHand) {
+    const handTall = HAND_TALL;
+    let handX = grabHand.x;
+    let handY;
+    if (grabHand.isTop) {
+      handY = grabHand.gapEdge - handTall;
+    } else {
+      handY = grabHand.gapEdge;
+    }
+    if (collisionPhase === 1) {
+      let t = Math.min(collisionTimer / 60, 1);
+      let startY = handY;
+      let endY = grabHand.isTop ? -handTall : canvas.height + handTall;
+      let animY = startY + (endY - startY) * t;
+      ctx.save();
+      ctx.translate(handX + HAND_WIDTH / 2, animY + handTall / 2);
+      ctx.scale(1, grabHand.isTop ? -1 : 1);
+      ctx.drawImage(gameImages.grab, -HAND_WIDTH / 2, -handTall / 2, HAND_WIDTH, handTall);
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.translate(handX + HAND_WIDTH / 2, handY + handTall / 2);
+      ctx.scale(1, grabHand.isTop ? -1 : 1);
+      ctx.drawImage(gameImages.grab, -HAND_WIDTH / 2, -handTall / 2, HAND_WIDTH, handTall);
+      ctx.restore();
+    }
+  }
+}
+
+function showFeatherGifAtGrab() {
+  let handTall = HAND_TALL;
+  let handX = grabHand.x;
+  let handY = grabHand.isTop ? grabHand.gapEdge - handTall : grabHand.gapEdge;
+  let fgW = 120, fgH = 120;
+  let centerX = handX + HAND_WIDTH / 2 - fgW / 2;
+  let centerY = grabHand.isTop ? (handY + handTall - fgH / 2) : (handY - fgH / 2);
+
+  featherGifElem.style.display = "none";
+  featherGifElem.src = "";
+  setTimeout(() => {
+    featherGifElem.src = "feather.gif";
+    featherGifElem.style.left = (canvasRect.left + centerX) + "px";
+    featherGifElem.style.top = (canvasRect.top + centerY) + "px";
+    featherGifElem.width = fgW;
+    featherGifElem.height = fgH;
+    featherGifElem.style.display = "block";
+  }, 0);
+
+  if (featherTimeout) clearTimeout(featherTimeout);
+  featherTimeout = setTimeout(() => {
+    featherGifElem.style.display = "none";
+  }, FEATHER_GIF_DURATION);
+}
+
+// --- REPLACE getRandomSafePowerupY() WITH:
+function getPowerupYInNextGate() {
+  for (let i = 0; i < hands.length; i++) {
+    if (hands[i].x + HAND_WIDTH > bird.x) {
+      const hand = hands[i];
+      const fingerMargin = 40;
+      const powerupHeight = 22;
+      const gapTop = hand.y - GAP / 2 + fingerMargin;
+      const gapBottom = hand.y + GAP / 2 - fingerMargin - powerupHeight;
+      if (gapBottom < gapTop) return hand.y - powerupHeight / 2;
+      return Math.random() * (gapBottom - gapTop) + gapTop;
+    }
+  }
+  // fallback: dead center if no gate found
+  return groundY / 2;
+}
+
+
+
+
+// === UPDATE ===
+function update() {
+  // === GRAB SEQUENCE (run every update if GRABBED) ===
+  if (gameState === STATE_GRABBED) {
+    collisionTimer++;
+    if (collisionPhase === 0 && collisionTimer >= GRAB_SHOW_FEATHER_FRAMES) {
+      collisionPhase = 1;
+      collisionTimer = 0;
+      featherGifElem.style.display = 'none';
+    }
+    else if (collisionPhase === 1) {
+  // Calculate grab hand animation position
+  const handTall = HAND_TALL;
+  let handX = grabHand.x;
+  let handY = grabHand.isTop
+    ? grabHand.gapEdge - handTall
+    : grabHand.gapEdge;
+  let startY = handY;
+  let endY = grabHand.isTop ? -handTall : canvas.height + handTall;
+  let t = Math.min(collisionTimer / 60, 1);
+  let animY = startY + (endY - startY) * t;
+
+  // If grab hand fully off screen, trigger game over
+  if ((grabHand.isTop && animY <= -handTall) ||
+      (!grabHand.isTop && animY > canvas.height)) {
+    setGameOver();
+    collisionPhase = 2;
+    featherGifElem.style.display = 'none';
+  } else {
+    collisionTimer++;
+  }
+}
+    return; // Only process drag while grabbed
+  }
+
+  if (currentMode === MODE_CHAOS) {
+    if (score >= 40 && !fadeActive && !fadeStarted) {
+      fadeActive = true;
+      fadeTimer = 0;
+      fadeStarted = true;
+    }
+    if (fadeActive && fadeAlpha < 1) {
+      fadeTimer++;
+      fadeAlpha += 0.012;
+      if (fadeAlpha > 1) fadeAlpha = 1;
+    }
+  } else {
+    fadeActive = false;
+    fadeAlpha = 0;
+    fadeTimer = 0;
+    fadeStarted = false;
+  }
+
+  if (score >= 35) MIN_HAND_SPACING = MIN_HAND_SPACING_SUPERTIGHT;
+  else if (score >= 15) MIN_HAND_SPACING = MIN_HAND_SPACING_TIGHT;
+  else MIN_HAND_SPACING = MIN_HAND_SPACING_INIT;
+
+  if (gameState === STATE_PLAY) {
+    bird.velocity += bird.gravity;
+    bird.y += bird.velocity;
+    if (bird.y < 0) { bird.y = 0; bird.velocity = 0; }
+    if (bird.y + bird.height > groundY) setGameOver();
+
+    let nextCenterY = 250 + Math.sin(frame * 0.03) * 100;
+    if (score >= 35) {
+      if (currentMode === MODE_CHAOS) {
+        nextCenterY = 250 +
+          Math.sin(frame * 0.10) * 52 +
+          Math.sin(frame * 0.025) * 18 +
+          (Math.random()-0.5)*12;
+      } else {
+        nextCenterY = 250 +
+          Math.sin(frame * 0.16) * 90 +
+          Math.sin(frame * 0.031) * 40 +
+          (Math.random()-0.5)*14;
+      }
+    } else if (currentMode === MODE_CHAOS && score >= 30) {
+      nextCenterY = 250 + Math.sin(frame * 0.21) * 60 + Math.sin(frame * 0.04) * 10;
+    }
+    if (
+      hands.length === 0 ||
+      hands[hands.length - 1].x < canvas.width + HAND_WIDTH - MIN_HAND_SPACING
+    ) {
+      hands.push({
+        x: canvas.width + HAND_WIDTH,
+        y: nextCenterY,
+        width: HAND_WIDTH,
+        passed: false
+      });
+    }
+
+if (!tinyPowerupSpawned && score >= TINY_POWERUP_SCORE) {
+  let py = getPowerupYInNextGate();
+  // Place the powerup at the next gate's X position, centered horizontally in the gap:
+  let nextGate = hands.find(h => h.x + HAND_WIDTH > bird.x) || hands[0];
+  let px = (nextGate ? nextGate.x + HAND_WIDTH/2 - 11 : canvas.width/2 - 11);
+  powerups.push({
+    x: px,
+    y: py,
+    vx: -groundScrollSpeed,
+    vy: 0,
+    collected: false,
+    type: "tiny"
+  });
+  tinyPowerupSpawned = true;
+}
+    
+
+    const hitMargin = 7;
+    for (let i = hands.length - 1; i >= 0; i--) {
+      hands[i].x -= groundScrollSpeed;
+      const handX = hands[i].x;
+      const topLimit = hands[i].y - GAP / 2;
+      const bottomLimit = hands[i].y + GAP / 2;
+      const gapTop = topLimit, gapBottom = bottomLimit;
+      const birdLeft = bird.x + hitMargin, birdRight = bird.x + bird.width - hitMargin;
+      const birdTop = bird.y + hitMargin, birdBottom = bird.y + bird.height - hitMargin;
+
+      if (!hands[i].passed && hands[i].x + HAND_WIDTH < bird.x) {
+        score++;
+        hands[i].passed = true;
+        scoreSound.currentTime = 0; scoreSound.play();
+      }
+
+      if (
+        bird.visible &&
+        birdRight > handX &&
+        birdLeft < handX + HAND_WIDTH &&
+        (birdTop < topLimit || birdBottom > bottomLimit)
+      ) {
+        let isGapEdge = false;
+        if (
+          (birdBottom > gapTop - EDGE_THICKNESS && birdTop < gapTop + EDGE_THICKNESS) ||
+          (birdTop < gapBottom + EDGE_THICKNESS && birdBottom > gapBottom - EDGE_THICKNESS)
+        ) isGapEdge = true;
+
+        if (isGapEdge) {
+          collisionPhase = 0;
+          collisionTimer = 0;
+          grabHand = {
+            x: handX,
+            isTop: birdTop < topLimit,
+            gapEdge: birdTop < topLimit ? topLimit : bottomLimit
+          };
+          grabHandStartY = grabHand.isTop
+            ? grabHand.gapEdge - HAND_TALL
+            : grabHand.gapEdge;
+          grabHandEndY = grabHand.isTop ? -HAND_TALL : canvas.height + HAND_TALL;
+          grabbedHandIndex = i;
+          bird.visible = false;
+          gameState = STATE_GRABBED;
+          showFeatherGifAtGrab();
+          laughSound.currentTime = 0; laughSound.play();
+        } else {
+          bird.visible = false;
+          bounceAnim = true;
+          bounceY = bird.y;
+          bounceVy = -10 - Math.random() * 3;
+          bounceRot = 0;
+          bounceTimer = 0;
+          bonkSound.currentTime = 0; bonkSound.play();
+          gameState = STATE_BOUNCE;
+          return;
+        }
+      }
+
+      if (hands[i].x + HAND_WIDTH < 0) hands.splice(i, 1);
+    }
+
+    for (let i = powerups.length - 1; i >= 0; i--) {
+      let p = powerups[i];
+      p.x += p.vx || 0;
+      p.y += p.vy || 0;
+      if (
+        !p.collected &&
+        p.x < bird.x+bird.width &&
+        p.x+22 > bird.x &&
+        p.y < bird.y+bird.height &&
+        p.y+22 > bird.y
+      ) {
+        if (p.type === "firerate" && birdFireRate > 6) birdFireRate -= 3;
+        if (p.type === "power") birdProjectilePower++;
+        if (p.type === "tiny" && !bird.tiny) {
+          bird.width = 5; bird.height = 5;
+          bird.tiny = true;
+          tinySound.currentTime = 0; tinySound.play();
+        } else if (p.type !== "tiny") {
+          powerupSound.currentTime = 0; powerupSound.play();
+        }
+        p.collected = true;
+      }
+      if (p.collected || p.x < -30 || p.y > canvas.height) powerups.splice(i,1);
+    }
+
+    if (currentMode === MODE_CHAOS && score >= BOSS_SCORE && !boss) {
+      let bossH = Math.floor(canvas.height * 0.66);
+      boss = {
+        x: Math.floor(canvas.width * 0.61),
+        y: groundY - bossH + 44,
+        w: 200,
+        h: bossH
+      };
+      bossHealth = 10;
+      bossProjectiles = [];
+      bossFrame = 0;
+      bossDefeated = false;
+      bossHitBlink = 0;
+      bossGrowAnim = 0;
+      bossGrowing = true;
+      gameState = STATE_BOSS;
+      return;
+    }
+  }
+
+  if (gameState === STATE_BOSS && boss) {
+    bird.velocity += bird.gravity;
+    bird.y += bird.velocity;
+    if (bird.y < 0) { bird.y = 0; bird.velocity = 0; }
+    if (bird.y + bird.height > groundY) setGameOver();
+
+    if (bossGrowing) {
+      bossGrowAnim += 0.012;
+      if (bossGrowAnim >= 1) {
+        bossGrowAnim = 1;
+        bossGrowing = false;
+      }
+    }
+
+    bossFrame++;
+    if (bossFrame % 60 === 0) {
+      bossProjectiles.push({
+        x: boss.x + boss.w / 2 - 6,
+        y: boss.y + boss.h / 2 - 4,
+        vx: -5 + Math.random()*-2,
+        vy: (bird.y+bird.height/2-boss.y-boss.h/2)/60 + (Math.random()-0.5)*2
+      });
+    }
+    for (let i = bossProjectiles.length-1; i >= 0; i--) {
+      let p = bossProjectiles[i];
+      p.x += p.vx; p.y += p.vy;
+      if (
+        p.x < bird.x+bird.width &&
+        p.x+12 > bird.x &&
+        p.y < bird.y+bird.height &&
+        p.y+8 > bird.y
+      ) {
+        setGameOver();
+      }
+      if (p.x < -20 || p.y < -20 || p.y > canvas.height+20) bossProjectiles.splice(i,1);
+    }
+
+    for (let i = birdProjectiles.length-1; i >= 0; i--) {
+      let p = birdProjectiles[i];
+      p.x += p.vx;
+      if (
+        p.x + 8 > boss.x &&
+        p.x < boss.x + boss.w &&
+        p.y + 8 > boss.y &&
+        p.y < boss.y + boss.h + 44
+      ) {
+        bossHealth -= p.power || 1;
+        bossHitBlink = 6;
+        bossHitSound.currentTime = 0; bossHitSound.play();
+        birdProjectiles.splice(i,1);
+        if (bossHealth <= 0) {
+          bossDefeated = true;
+          bossVictoryTimer = 0;
+          gameState = STATE_VICTORY;
+        }
+        continue;
+      }
+      if (p.x > canvas.width + 30) birdProjectiles.splice(i,1);
+    }
+
+    if (bossHitBlink > 0) bossHitBlink--;
+
+    if (bossFrame % 180 === 60 && Math.random() < 0.7) {
+      let targetY = bird.y + bird.height/2 - 11;
+      let startX = boss.x+boss.w/2-11;
+      let startY = boss.y+boss.h/2-11;
+      let dx = (bird.x+bird.width/2-11) - startX;
+      let dy = targetY - startY;
+      let dist = Math.sqrt(dx*dx+dy*dy);
+      let speed = 1.5;
+      let vx = (dx/dist) * speed;
+      let vy = (dy/dist) * speed;
+      powerups.push({
+        x: startX,
+        y: startY,
+        vx: vx,
+        vy: vy,
+        collected: false,
+        type: (Math.random()>0.5 ? "firerate" : "power")
+      });
+    }
+
+    for (let i = powerups.length - 1; i >= 0; i--) {
+      let p = powerups[i];
+      p.x += p.vx || 0;
+      p.y += p.vy || 0;
+      if (
+        !p.collected &&
+        p.x < bird.x+bird.width &&
+        p.x+22 > bird.x &&
+        p.y < bird.y+bird.height &&
+        p.y+22 > bird.y
+      ) {
+        if (p.type === "firerate" && birdFireRate > 6) birdFireRate -= 3;
+        if (p.type === "power") birdProjectilePower++;
+        powerupSound.currentTime = 0; powerupSound.play();
+        p.collected = true;
+      }
+      if (p.collected || p.x < -30 || p.y > canvas.height) powerups.splice(i,1);
+    }
+  }
+}
+
+
+function draw() {
+  drawBackground();
+  if (gameState === STATE_GRABBED) {
+    drawGrabHand();
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("Score: " + score, 10, 30);
+    return;
+  }
+
+  if (gameState === STATE_TITLE) {
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 38px 'Press Start 2P', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Zombird!", canvas.width / 2, 160);
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#FFD700";
+    ctx.fillText("High Score: " + highScore, canvas.width / 2, 360);
+    ctx.font = "14px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#80ff80";
+    ctx.fillText("Click or Tap to Start", canvas.width / 2, 320);
+    ctx.font = "11px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#aaa";
+    ctx.fillText("Choose your mode!", canvas.width / 2, 395);
+    ctx.font = "14px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#FFD700";
+    ctx.fillText("Classic [1]", canvas.width / 2, 425);
+    ctx.fillStyle = "#80ff80";
+    ctx.fillText("Chaos   [2]", canvas.width / 2, 450);
+  } else if (gameState === STATE_MODE_SELECT) {
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 22px 'Press Start 2P', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("SELECT MODE", canvas.width / 2, 150);
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#FFD700";
+    ctx.fillText("1) Classic", canvas.width / 2, 220);
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#80ff80";
+    ctx.fillText("2) Chaos", canvas.width / 2, 270);
+    ctx.font = "11px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#fff";
+    ctx.fillText("Press 1 or 2, or click/tap", canvas.width / 2, 340);
+  }
+  else if (gameState === STATE_PLAY) {
+    hands.forEach(drawHand);
+    drawBird();
+    drawPowerups();
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("Score: " + score, 10, 30);
+    ctx.font = "11px 'Press Start 2P', monospace";
+    ctx.fillStyle = currentMode === MODE_CLASSIC ? "#FFD700" : "#80ff80";
+    ctx.fillText(
+      currentMode === MODE_CLASSIC ? "Classic" : "Chaos Mode",
+      10, 50
+    );
+    if (bird.tiny) {
+      ctx.font = "12px 'Press Start 2P', monospace";
+      ctx.fillStyle = "#00f";
+      ctx.fillText("Tiny!", 10, 70);
+    }
+  }
+  else if (gameState === STATE_BOUNCE) {
+    bounceUpdateDraw();
+    return;
+  }
+  else if (gameState === STATE_BOSS) {
+    drawBoss();
+    drawBossProjectiles();
+    drawBirdProjectiles();
+    drawBird();
+    drawPowerups();
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "18px 'Press Start 2P', monospace";
+    ctx.fillText("BOSS!", 10, 30);
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.fillText("Score: " + score, 10, 60);
+    if (bird.tiny) {
+      ctx.font = "12px 'Press Start 2P', monospace";
+      ctx.fillStyle = "#00f";
+      ctx.fillText("Tiny!", 10, 80);
+    }
+  }
+  else if (gameState === STATE_VICTORY) {
+    drawBoss();
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "32px 'Press Start 2P', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("VICTORY!", canvas.width / 2, canvas.height / 2 - 40);
+    ctx.font = "18px 'Press Start 2P', monospace";
+    ctx.fillText("Score: " + score, canvas.width / 2, canvas.height / 2 + 30);
+    ctx.font = "12px 'Press Start 2P', monospace";
+    ctx.fillText("Click or Tap to Restart", canvas.width / 2, canvas.height / 2 + 60);
+  }
+  else if (gameState === STATE_GAMEOVER) {
+    hands.forEach(drawHand);
+    drawBird();
+    drawPowerups();
+    drawGround();
+    ctx.fillStyle = "#fff";
+    ctx.font = "22px 'Press Start 2P', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Game Over", canvas.width / 2, canvas.height / 2 - 60);
+    ctx.font = "13px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#FFD700";
+    ctx.fillText("High Score: " + highScore, canvas.width / 2, canvas.height / 2 - 20);
+    ctx.font = "12px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#fff";
+    ctx.fillText("Your Score: " + score, canvas.width / 2, canvas.height / 2 + 15);
+    ctx.font = "10px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#80ff80";
+    ctx.fillText("Click or Tap to Restart", canvas.width / 2, canvas.height / 2 + 70);
+  }
+}
+
+function bounceUpdateDraw() {
+  if (!bounceAnim) return;
+  // Animate the bird bouncing off the hand
+  bounceVy += 0.7; // gravity
+  bounceY += bounceVy;
+  bounceRot += 0.23;
+
+  ctx.save();
+  ctx.translate(bird.x + bird.width / 2, bounceY + bird.height / 2);
+  ctx.rotate(bounceRot);
+  let img = flapState ? gameImages.birdFlap : gameImages.birdIdle;
+if (img && img.complete && img.width)
+  ctx.drawImage(img, -bird.width/2, -bird.height/2, bird.width, bird.height);
+else {
+  ctx.fillStyle = "#FF0";
+  ctx.fillRect(-bird.width/2, -bird.height/2, bird.width, bird.height);
+}
+
+  ctx.restore();
+
+  // Draw the hands and ground (optional, for effect)
+  hands.forEach(drawHand);
+  drawPowerups();
+  drawGround();
+
+  // After the bounce is off-screen or time's up, trigger game over
+  bounceTimer++;
+  if (bounceY > groundY || bounceTimer > 40) {
+    bounceAnim = false;
+    setGameOver();
+  }
+}
+
+
+function loop() {
+  if (gameState === STATE_BOUNCE) {
+    bounceUpdateDraw();
+    frame++;
+    requestAnimationFrame(loop);
+    return;
+  }
+  update();
+  draw();
+  frame++;
+  requestAnimationFrame(loop);
+}
+
+function startMode(mode) {
+  currentMode = mode;
+  gameState = STATE_PLAY;
+  resetGame();
+  if (mode === MODE_CLASSIC) {
+    musicClassic.currentTime = 0; musicClassic.play();
+  } else {
+    musicChaos.currentTime = 0; musicChaos.play();
+  }
+}
+function handleMenuInput(num) {
+  if (num === 1) {
+    startMode(MODE_CLASSIC);
+    titleMusic.pause(); titleMusic.currentTime = 0;
+  } else if (num === 2) {
+    startMode(MODE_CHAOS);
+    titleMusic.pause(); titleMusic.currentTime = 0;
+  }
+}
+function handleInput(e) {
+  ensureAudioAllowed();
+  if (gameState === STATE_TITLE) {
+    gameState = STATE_MODE_SELECT;
+    resetGame();
+    musicClassic.pause(); musicClassic.currentTime = 0;
+    musicChaos.pause(); musicChaos.currentTime = 0;
+    titleMusic.currentTime = 0; titleMusic.play();
+  } else if (gameState === STATE_GAMEOVER) {
+    gameState = STATE_MODE_SELECT;
+    resetGame();
+    titleMusic.currentTime = 0; titleMusic.play();
+    flapSound.currentTime = 0; flapSound.play();
+  } else if (gameState === STATE_PLAY) {
+    bird.velocity = bird.lift;
+    flapSound.currentTime = 0; flapSound.play();
+    flapState = true;
+    setTimeout(() => (flapState = false), 150);
+  } else if (gameState === STATE_BOSS) {
+    bird.velocity = bird.lift;
+    flapSound.currentTime = 0; flapSound.play();
+    flapState = true;
+    setTimeout(() => (flapState = false), 150);
+  } else if (gameState === STATE_VICTORY) {
+    gameState = STATE_MODE_SELECT;
+    resetGame();
+    titleMusic.currentTime = 0; titleMusic.play();
+  }
+}
+function shootProjectile() {
+  if (gameState !== STATE_BOSS) return;
+  if (!canShoot) return;
+  canShoot = false;
+  setTimeout(() => canShoot = true, birdFireRate * 8);
+  birdProjectiles.push({
+    x: bird.x + bird.width,
+    y: bird.y + bird.height/2 - 4,
+    vx: 8,
+    power: birdProjectilePower
+  });
+  shootSound.currentTime = 0; shootSound.play();
+}
+canvas.addEventListener("mousedown", (e) => {
+  ensureAudioAllowed();
+  if (gameState === STATE_BOSS && e.button === 2) {
+    shootProjectile();
+    return;
+  }
+  if (gameState === STATE_BOSS || gameState === STATE_PLAY)
+    handleInput(e);
+});
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  ensureAudioAllowed();
+  if (gameState === STATE_BOSS) shootProjectile();
+  handleInput(e);
+});
+canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
+document.addEventListener('keydown', e => {
+  ensureAudioAllowed();
+  if (gameState === STATE_MODE_SELECT) {
+    if (e.key === "1") handleMenuInput(1);
+    if (e.key === "2") handleMenuInput(2);
+  } else if ((gameState === STATE_PLAY || gameState === STATE_BOSS) && (e.key === " " || e.key === "ArrowUp")) {
+    bird.velocity = bird.lift;
+    flapSound.currentTime = 0; flapSound.play();
+    flapState = true;
+    setTimeout(() => (flapState = false), 150);
+  } else if (gameState === STATE_BOSS && e.key.toLowerCase() === "z") {
+    shootProjectile();
+  } else if (gameState === STATE_TITLE || gameState === STATE_GAMEOVER || gameState === STATE_VICTORY) {
+    handleInput();
+  }
+});
+canvas.addEventListener("click", function(e) {
+  if (gameState === STATE_MODE_SELECT) {
+    if (e.offsetY < canvas.height/2) handleMenuInput(1);
+    else handleMenuInput(2);
+  }
+});
+canvas.addEventListener("touchend", function(e) {
+  let y = (e.changedTouches[0].clientY - canvasRect.top);
+  if (gameState === STATE_MODE_SELECT) {
+    if (y < canvas.height/2) handleMenuInput(1);
+    else handleMenuInput(2);
+  }
+});
+window.addEventListener("resize", function() {
+  canvasRect = canvas.getBoundingClientRect();
+});
+loadImages(() => { loop(); });
+</script>
+</body>
+</html>
