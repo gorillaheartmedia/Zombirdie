@@ -1050,6 +1050,77 @@ function shootProjectile() {
   });
   shootSound.currentTime = 0; shootSound.play();
 }
+
+// === Added/Enhanced touchscreen event handlers ===
+
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  ensureAudioAllowed();
+
+  const touch = e.touches[0];
+  const pos = toVirtualCoords(touch.clientX, touch.clientY);
+
+  if (gameState === STATE_TITLE) {
+    // Starting game on title screen touch
+    gameState = STATE_MODE_SELECT;
+    resetGame();
+    musicClassic.pause();
+    musicChaos.pause();
+    titleMusic.currentTime = 0;
+    titleMusic.play();
+  } else if (gameState === STATE_MODE_SELECT) {
+    // Select mode based on vertical touch position
+    if (pos.y < VIRTUAL_HEIGHT / 2) {
+      handleMenuInput(1); // Classic
+    } else {
+      handleMenuInput(2); // Chaos
+    }
+  } else if (gameState === STATE_PLAY) {
+    // Jump / flap on touch during play
+    bird.velocity = bird.lift;
+    flapSound.currentTime = 0;
+    flapSound.play();
+    flapState = true;
+    setTimeout(() => (flapState = false), 150);
+  } else if (gameState === STATE_BOSS) {
+    // Fire projectile and flap on touch during boss fight
+    shootProjectile();
+
+    // Flap as well
+    bird.velocity = bird.lift;
+    flapSound.currentTime = 0;
+    flapSound.play();
+    flapState = true;
+    setTimeout(() => (flapState = false), 150);
+  } else if (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY) {
+    // Restart game from gameover or victory on touch
+    gameState = STATE_MODE_SELECT;
+    resetGame();
+    titleMusic.currentTime = 0;
+    titleMusic.play();
+  }
+});
+
+canvas.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  if (!e.changedTouches || !e.changedTouches[0]) return;
+
+  const touch = e.changedTouches[0];
+  const pos = toVirtualCoords(touch.clientX, touch.clientY);
+
+  if (gameState === STATE_MODE_SELECT) {
+    // Select mode on touchend as well (allows for tap release)
+    if (pos.y < VIRTUAL_HEIGHT / 2) {
+      handleMenuInput(1);
+    } else {
+      handleMenuInput(2);
+    }
+  }
+});
+
+// Middle mouse click or right click dont trigger context menu on canvas
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+
 canvas.addEventListener("mousedown", (e) => {
   ensureAudioAllowed();
   const pos = toVirtualCoords(e.clientX, e.clientY);
@@ -1060,13 +1131,6 @@ canvas.addEventListener("mousedown", (e) => {
   if (gameState === STATE_BOSS || gameState === STATE_PLAY)
     handleInput(e);
 });
-canvas.addEventListener("touchstart", (e) => {
-  e.preventDefault();
-  ensureAudioAllowed();
-  if (gameState === STATE_BOSS) shootProjectile();
-  handleInput(e);
-});
-canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
 document.addEventListener('keydown', e => {
   ensureAudioAllowed();
   if (gameState === STATE_MODE_SELECT) {
